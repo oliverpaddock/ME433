@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include "uart.h"
 #include "i2c_master_noint.h"
+#include "mpu6050.h"
 
 #define DESIRED_BAUD 230400
 #define SYS_FREQ 48000000ul
@@ -44,25 +45,8 @@ void delay(int counts) {
     while (_CP0_GET_COUNT() < counts) {}
 }
 
-void i2c_write(unsigned char adr, unsigned char reg, unsigned char val) {
-    i2c_master_start();
-    i2c_master_send(adr<<1);
-    i2c_master_send(reg);
-    i2c_master_send(val);
-    i2c_master_stop();
-}
-
-unsigned char i2c_read(unsigned char adr, unsigned char reg) {
-    unsigned char read;
-    i2c_master_start();
-    i2c_master_send(adr<<1); // send write address
-    i2c_master_send(reg);
-    i2c_master_restart();
-    i2c_master_send(adr<<1|0b1); // send read address
-    read = i2c_master_recv();
-    i2c_master_ack(1);
-    i2c_master_stop();
-    return read;
+void blink() {
+    LATAbits.LATA4 = !LATAbits.LATA4;
 }
 
 int main() {
@@ -87,20 +71,52 @@ int main() {
     TRISBbits.TRISB4 = 1;
 
     UART_Startup();
-    i2c_master_setup();
+    init_mpu6050();
     __builtin_enable_interrupts();
     
-    i2c_write(MCP23008, 0x00, 0b01111111);
-    i2c_write(MCP23008, 0x0A, 0b10000000);
+    char m_in[100];
+    char m_out[200];
+    int i;
     
-    char strval[50];
-    unsigned char val;
+    #define NUM_DATA_PNTS 300
+    float ax[NUM_DATA_PNTS], ay[NUM_DATA_PNTS], az[NUM_DATA_PNTS],
+            gx[NUM_DATA_PNTS], gy[NUM_DATA_PNTS], gz[NUM_DATA_PNTS],
+            temp[NUM_DATA_PNTS];
+    
+    char who = whoami();
+    if (who != 0x68) {
+        while(1) {
+            LATAbits.LATA4 = 0;
+            
+        }
+    }
+    
+    char IMU_buf[IMU_ARRAY_LEN]; // 8 bit data array for imu data
+    
     while (1) {
-        val = !i2c_read(MCP23008, 0x09);
-        sprintf(strval, "%d\r\n", val);
-        WriteUART1(strval);
-        LATAbits.LATA4 = !LATAbits.LATA4;
-        i2c_write(MCP23008, 0x0A, (val<<7)&0b10000000);
-        delay(2400000);
+        
+        ReadUART1(m_in, 100); // wait for newline
+        blink();
+        
+        for (i=0; i<NUM_DATA_PNTS; i++) {
+            _CP0_SET_COUNT(0);
+            // read IMU
+            burst_read_mpu6050(IMU_buf);
+            ax[i] = conv_xXL(IMU_buf);
+            ay[i] = conv_yXL(IMU_buf);
+            az[i] = conv_zXL(IMU_buf);
+            gx[i] = conv_xG(IMU_buf);
+            gy[i] = conv_yG(IMU_buf);
+            gz[i] = conv_zG(IMU_buf);
+            temp[i] = conv_temp(IMU_buf);
+            
+            while (_CP0_GET_COUNT()<24000000/2/100){}
+        }
+        
+        for (i=0; i<NUM_DATA_PNTS; i++) {
+            sprintf(m_out, "%d %f %f %f %f %f %f %f\r\n", 
+                    NUM_DATA_PNTS-i, ax[i], ay[i], az[i], gx[i], gy[i], gz[i], temp[i]);
+            WriteUART1(m_out);
+        }
     }
 }
